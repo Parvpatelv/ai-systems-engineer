@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.git/
+.gitignore
+*.ipynb
+data/          # keep data out of the image by default
+tests/
+dist/
+build/
