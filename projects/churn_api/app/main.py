@@ -1,45 +1,40 @@
-# app/main.py
-from pathlib import Path
+# churn_api/app/main.py
 import os
-import json
-import traceback
-
 import joblib
+import glob
 import pandas as pd
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+import json, datetime, pathlib   # <-- Added logging-related imports
 
-# ---- Model/artifact paths ----
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "model.pkl"
-MODEL_PATH = Path(os.environ.get("MODEL_PATH", DEFAULT_MODEL_PATH))
-COLUMNS_PATH = MODEL_PATH.parent / "columns.json"
+# --- Logging setup ---
+LOG_DIR = pathlib.Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+PRED_LOG = LOG_DIR / "prediction_log.jsonl"
 
-app = FastAPI(title="Churn API", version="1.0.0")
+def log_prediction(payload: dict, prediction: dict):
+    """Append prediction event to JSONL log."""
+    event = {
+        "ts": datetime.datetime.utcnow().isoformat(),
+        "model_version": _loaded_version,
+        "request": payload,
+        "prediction": prediction,
+    }
+    with open(PRED_LOG, "a") as f:
+        f.write(json.dumps(event) + "\n")
 
-# ---- Load model at startup (once) ----
-try:
-    pipe = joblib.load(MODEL_PATH)
-except Exception as e:
-    # Fail fast with a clear message if model is missing or incompatible
-    raise RuntimeError(f"Failed to load model from {MODEL_PATH}: {e}") from e
+# ---- Config ----
+MODEL_DIR = "models"
+MODEL_VERSION = os.getenv("MODEL_VERSION")
+app = FastAPI(title="Customer Churn Prediction API", version="1.0")
 
-# ---- Load feature metadata to keep inference aligned with training ----
-try:
-    with open(COLUMNS_PATH, "r") as f:
-        cols_meta = json.load(f)
-    CATEGORICAL = cols_meta["categorical"]
-    NUMERIC = cols_meta["numeric"]
-    FEATURES = CATEGORICAL + NUMERIC
-except Exception as e:
-    raise RuntimeError(f"Failed to load columns from {COLUMNS_PATH}: {e}") from e
-
-# ---- Request schema (align types with training) ----
-class PredictRequest(BaseModel):
+# ---- Request Schema ----
+class CustomerFeatures(BaseModel):
     gender: str
-    senior_citizen: int = Field(ge=0, le=1)  # 0 or 1
+    senior_citizen: int
     partner: str
     dependents: str
-    tenure: int = Field(ge=0)
+    tenure: float
     phone_service: str
     multiple_lines: str
     internet_service: str
@@ -55,41 +50,68 @@ class PredictRequest(BaseModel):
     monthly_charges: float
     total_charges: float
 
+
+# ---- Model Loading ----
+_model = None
+_loaded_version = None
+
+def _get_model_path():
+    """Return model path: either specific version or latest."""
+    if MODEL_VERSION:
+        path = f"{MODEL_DIR}/churn_model_{MODEL_VERSION}.pkl"
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model version {MODEL_VERSION} not found.")
+        return path
+    # Fallback: pick latest by filename sort
+    files = sorted(glob.glob(f"{MODEL_DIR}/churn_model_*.pkl"))
+    if not files:
+        raise FileNotFoundError("No trained models found in models/.")
+    return files[-1]
+
+
+def _load_model():
+    """Lazy-load model once."""
+    global _model, _loaded_version
+    if _model is None:
+        path = _get_model_path()
+        _model = joblib.load(path)
+        _loaded_version = os.path.basename(path).replace("churn_model_", "").replace(".pkl", "")
+    return _model
+
+
+# ---- Routes ----
+@app.get("/")
+def root():
+    """Basic sanity endpoint."""
+    return {"status": "ok", "message": "Churn Prediction API"}
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    try:
+        _load_model()
+        return {"status": "ok", "model_version": _loaded_version}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/version")
+def version():
+    try:
+        _load_model()
+        return {"model_version": _loaded_version}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/predict")
-def predict(payload: PredictRequest):
-    try:
-        record = payload.model_dump()  # pydantic v2
-        df = pd.DataFrame([record])
-
-        # Ensure all required columns exist
-        missing = [c for c in FEATURES if c not in df.columns]
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
-
-        # Enforce exact feature order
-        df = df[FEATURES].copy()
-
-        # Defensive numeric coercion
-        for col in NUMERIC:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        if df[NUMERIC].isna().any().any():
-            bad = df[NUMERIC].columns[df[NUMERIC].isna().any()].tolist()
-            raise HTTPException(status_code=400, detail=f"Invalid numeric values for: {bad}")
-
-        # Predict
-        proba = float(pipe.predict_proba(df)[:, 1][0])
-        pred = int(proba >= 0.5)
-        return {"churn_probability": proba, "churn": pred}
-
-    except HTTPException:
-        # Bubble up 4xx with clear message
-        raise
-    except Exception as e:
-        # Log full traceback to container logs, return readable error to client
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Inference error: {type(e).__name__}: {e}")
+def predict(features: CustomerFeatures):
+    model = _load_model()
+    X = pd.DataFrame([features.model_dump()])
+    proba = float(model.predict_proba(X)[:, 1][0])
+    label = int(proba >= 0.5)
+    result = {
+        "churn_probability": proba,
+        "churn_label": label,
+        "model_version": _loaded_version,
+    }
+    # --- Log the prediction event ---
+    log_prediction(features.model_dump(), result)
+    return result
