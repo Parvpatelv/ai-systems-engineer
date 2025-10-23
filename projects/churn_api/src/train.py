@@ -1,22 +1,48 @@
 # churn_api/src/train.py
+import os
 import json
-import argparse
-import joblib
-from pathlib import Path
+import pathlib
+import subprocess
+import datetime as dt
 
-from loguru import logger
-import numpy as np
+import joblib
 import pandas as pd
+from loguru import logger
+from sklearn.metrics import (
+    roc_auc_score,
+    classification_report,
+    accuracy_score,
+    log_loss,
+)
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score, classification_report, accuracy_score, log_loss
 
+# ---- Your data prep helpers ----
 from data_prep import load_data, train_val_split, get_X_y, CATEGORICAL, NUMERIC
+
+# ---- Paths & Logging setup ----
+MODELS_DIR = pathlib.Path("models")
+LOGS_DIR = pathlib.Path("logs")
+MODELS_DIR.mkdir(exist_ok=True)
+LOGS_DIR.mkdir(exist_ok=True)
+logger.add(LOGS_DIR / "train.log", rotation="1 MB", retention=5, enqueue=True, level="INFO")
+
+# ---- Model version (read from environment variable) ----
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v1.0")
+
+
+def get_git_sha() -> str:
+    """Return short git SHA for traceability; 'unknown' if not a git repo."""
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
+    except Exception:
+        return "unknown"
 
 
 def build_pipeline() -> Pipeline:
+    """Build a simple ML pipeline with preprocessing and logistic regression."""
     pre = ColumnTransformer(
         transformers=[
             ("cat", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL),
@@ -24,96 +50,90 @@ def build_pipeline() -> Pipeline:
         ]
     )
     clf = LogisticRegression(max_iter=200)
-    pipe = Pipeline([("pre", pre), ("clf", clf)])
-    return pipe
+    return Pipeline([("pre", pre), ("clf", clf)])
 
 
-def safe_metrics(y_true, proba):
-    """
-    Compute metrics safely:
-    - accuracy always
-    - log_loss and roc_auc only if both classes present in y_true
-    Accepts proba as shape (n,) or (n,2); uses positive-class probs.
-    """
-    y_true = np.asarray(y_true)
+def main(data_path: str):
+    logger.info(f"Loading data from {data_path}")
+    df = load_data(data_path)
+    logger.info(f"Rows: {len(df)} | churn counts: {df['churn'].value_counts(dropna=False).to_dict()}")
 
-    if proba.ndim == 2:
-        pos_proba = proba[:, 1]
-    else:
-        pos_proba = proba
-
-    y_pred = (pos_proba >= 0.5).astype(int)
-
-    m = {"accuracy": float(accuracy_score(y_true, y_pred))}
-
-    unique = np.unique(y_true)
-    if unique.size >= 2:
-        eps = 1e-15
-        p = np.clip(pos_proba, eps, 1 - eps)
-        try:
-            m["log_loss"] = float(log_loss(y_true, p))
-        except Exception:
-            pass
-        try:
-            m["roc_auc"] = float(roc_auc_score(y_true, pos_proba))
-        except Exception:
-            pass
-
-    return m
-
-
-def main(args):
-    logger.info(f"Loading data from {args.data}")
-    df = load_data(args.data)
-
-    # Split (robustness handled inside train_val_split)
-    train_df, val_df = train_val_split(df, test_size=args.test_size, random_state=42)
-
-    # Show class balance to help diagnose tiny/imbalanced folds
-    logger.info(f"Train size: {len(train_df)} | Val size: {len(val_df)}")
-    logger.info(f"Train class counts:\n{train_df['churn'].value_counts(dropna=False)}")
-    logger.info(f"Val class counts:\n{val_df['churn'].value_counts(dropna=False)}")
-
+    # Split data
+    train_df, val_df = train_val_split(df)
     X_train, y_train = get_X_y(train_df)
     X_val, y_val = get_X_y(val_df)
 
+    # Extra visibility (especially useful on tiny datasets)
+    logger.info(f"Train size: {len(train_df)} | Val size: {len(val_df)}")
+    try:
+        logger.info("Train class counts:\n" + y_train.value_counts().to_string())
+        logger.info("Val class counts:\n" + y_val.value_counts().to_string())
+    except Exception:
+        # y could be a numpy array; this keeps logging resilient
+        pass
+
+    # Build and train model
     pipe = build_pipeline()
-    logger.info("Fitting model...")
+    logger.info(f"Training churn model | version={MODEL_VERSION}")
     pipe.fit(X_train, y_train)
 
-    logger.info("Evaluating...")
-    proba = pipe.predict_proba(X_val)
-    metrics = safe_metrics(y_val, proba)
+    # ---------- Robust evaluation block ----------
+    proba = pipe.predict_proba(X_val)[:, 1]
+    pred = (proba >= 0.5).astype(int)
+
+    # Base metrics always available
+    metrics = {
+        "accuracy": float(accuracy_score(y_val, pred)),
+        "log_loss": float(log_loss(y_val, proba, labels=[0, 1])),
+    }
+
+    # ROC-AUC only if both classes present
+    if len(set(y_val)) >= 2:
+        metrics["roc_auc"] = float(roc_auc_score(y_val, proba))
+    else:
+        metrics["roc_auc"] = None
+        logger.warning("Validation set has a single class; ROC AUC is undefined.")
+
     logger.info(f"Validation metrics: {metrics}")
 
-    # Optional pretty classification report (only if both classes exist)
-    if len(np.unique(y_val)) >= 2:
-        y_pred = (proba[:, 1] >= 0.5).astype(int)
-        logger.info("\n" + classification_report(y_val, y_pred))
+    # Classification report (safe for zero-division)
+    cls_report = classification_report(y_val, pred, zero_division=0)
+    logger.info("Classification report:\n" + cls_report)
+    # ---------- End evaluation block ----------
 
-    # Ensure output directory exists, then save
-    model_path = Path(args.model_out)
-    cols_path = Path(args.columns_out)
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    cols_path.parent.mkdir(parents=True, exist_ok=True)
+    # ---- Save model & metadata with version ----
+    model_path = MODELS_DIR / f"churn_model_{MODEL_VERSION}.pkl"
+    meta_path = MODELS_DIR / f"metadata_{MODEL_VERSION}.json"
 
     joblib.dump(pipe, model_path)
-    with open(cols_path, "w") as f:
-        json.dump({"categorical": CATEGORICAL, "numeric": NUMERIC}, f)
 
-    logger.info(f"Saved model to {model_path} and columns to {cols_path}")
+    metadata = {
+        "version": MODEL_VERSION,
+        "saved_at_utc": dt.datetime.utcnow().isoformat() + "Z",
+        "git_sha": get_git_sha(),
+        "metrics": metrics,
+        "data": {
+            "path": data_path,
+            "n_rows": int(len(df)),
+            "train_size": int(len(train_df)),
+            "val_size": int(len(val_df)),
+        },
+        "features": {"categorical": CATEGORICAL, "numeric": NUMERIC},
+    }
+
+    with open(meta_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info(f"Saved model -> {model_path}")
+    logger.info(f"Saved metadata -> {meta_path}")
+    logger.success("Training completed successfully ✅")
 
 
 if __name__ == "__main__":
+    import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="data/churn_sample.csv")
-    parser.add_argument("--model_out", default="models/model.pkl")
-    parser.add_argument("--columns_out", default="models/columns.json")
-    parser.add_argument(
-        "--test_size",
-        type=float,
-        default=0.3,  # slightly larger to reduce single-class val splits on small data
-        help="Validation size as a fraction (0-1) or integer rows if your train_val_split supports it.",
-    )
     args = parser.parse_args()
-    main(args)
+
+    main(args.data)
