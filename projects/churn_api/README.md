@@ -25,3 +25,15 @@ Available endpoints:
 - `/health` → API health check
 - `/version` → Model version
 - `/predict` → Predict customer churn
+
+## 📊 Monitoring
+The API exposes Prometheus metrics at `/metrics`.
+
+Metrics:
+- `predictions_total{model_version}` — total predictions served
+- `prediction_errors_total{model_version}` — failed prediction requests
+- `prediction_duration_seconds{model_version}` — latency histogram
+
+Try locally: [curl http://127.0.0.1:8000/metrics] (curl http://127.0.0.1:8000/metrics)
+
+On Render: [https://churn-api-u2i2.onrender.com/metrics] (https://churn-api-u2i2.onrender.com/metrics)
