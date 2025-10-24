@@ -12,3 +12,4 @@ pydantic==2.9.2
 # Dev / Utils
 loguru==0.7.2
 python-dotenv==1.0.1
+prometheus-client==0.20.0

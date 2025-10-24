@@ -8,9 +8,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     MODEL_PATH=models/model.pkl
 
-# Create non-root user (safer in prod)
-RUN useradd -m appuser
-
 # Workdir
 WORKDIR /app
 
@@ -22,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ---- Python deps (cache-friendly) ----
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Optionally remove build tools after wheels are installed
 RUN apt-get purge -y build-essential && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
@@ -32,8 +29,8 @@ COPY src/ src/
 COPY app/ app/
 COPY models/ models/
 
-# If you REALLY need sample data inside the image, uncomment the next line:
-# COPY data/ data/
+# Create non-root user (safer in prod) AFTER files are present, then fix ownership
+RUN useradd -m appuser && chown -R appuser:appuser /app
 
 # Expose FastAPI port
 EXPOSE 8000
@@ -41,5 +38,5 @@ EXPOSE 8000
 # Drop privileges
 USER appuser
 
-# Start the API
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the API (PORT is flexible; defaults to 8000)
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
