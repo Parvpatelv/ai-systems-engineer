@@ -16,7 +16,7 @@ This project demonstrates an end-to-end AI Systems workflow:
   # inside a virtualenv
   MODEL_VERSION=v1.1 python src/train.py --data data/churn_sample.csv
 
-  ## 🌍 Live Demo
+## 🌍 Live Demo
 Access the deployed API here:
 👉 [https://churn-api-u2i2.onrender.com/docs](https://churn-api-u2i2.onrender.com/docs)
 
