@@ -13,8 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --- Logging setup (prediction logs) ---
-LOG_DIR = pathlib.Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+# LOG_DIR = pathlib.Path("logs")
+# LOG_DIR.mkdir(exist_ok=True)
+# PRED_LOG = LOG_DIR / "prediction_log.jsonl"
+# Use env LOG_DIR if provided, else default to /tmp/logs (writable on most hosts)
+LOG_DIR = pathlib.Path(os.getenv("LOG_DIR", "/tmp/logs"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 PRED_LOG = LOG_DIR / "prediction_log.jsonl"
 
 def log_prediction(payload: dict, prediction: dict, model_version: str):
