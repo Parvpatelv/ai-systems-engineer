@@ -5,6 +5,11 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+# All shell steps will run inside the app folder
+defaults:
+  run:
+    working-directory: projects/churn_api
+
 jobs:
   build-test-deploy:
     runs-on: ubuntu-latest
@@ -12,6 +17,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show repo layout (debug)
+        run: |
+          pwd
+          ls -la
+          echo "---- repo root ----"
+          ls -la $GITHUB_WORKSPACE
+          echo "---- app dir ----"
+          ls -la app || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,14 +37,14 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # Simple smoke test: verify the app module imports
+      # Smoke test: import your FastAPI module from the app dir
       - name: Smoke test import
         run: python -c "import importlib; importlib.import_module('app.main'); print('Imported app.main OK')"
 
-      - name: Build Docker image
+      - name: Build Docker image (app subdir as build context)
         run: docker build -t churn-api:ci .
 
-      # Always run, but guard on the secret inside the script
+      # Trigger Render deploy (works regardless of working-directory)
       - name: Trigger Render deploy (if hook is set)
         env:
           HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
@@ -41,4 +55,3 @@ jobs:
           else
             echo "No RENDER_DEPLOY_HOOK secret set; skipping deploy."
           fi
-# Just want to check
