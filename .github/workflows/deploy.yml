@@ -3,6 +3,7 @@ name: CI/CD
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build-test-deploy:
@@ -29,11 +30,14 @@ jobs:
       - name: Build Docker image
         run: docker build -t churn-api:ci .
 
-      # Optional: trigger Render deploy via Deploy Hook secret
-      - name: Trigger Render deploy
-        if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
+      # Always run, but guard on the secret inside the script
+      - name: Trigger Render deploy (if hook is set)
         env:
           HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: |
-          echo "Triggering Render deploy..."
-          curl -fsSL -X POST "$HOOK" && echo "Render deploy triggered."
+          if [ -n "$HOOK" ]; then
+            echo "Triggering Render deploy..."
+            curl -fsSL -X POST "$HOOK" && echo "Render deploy triggered."
+          else
+            echo "No RENDER_DEPLOY_HOOK secret set; skipping deploy."
+          fi
