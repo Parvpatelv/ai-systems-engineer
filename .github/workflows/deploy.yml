@@ -1,0 +1,41 @@
+name: CI/CD
+on:
+  push:
+    branches: [ "main" ]
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Smoke tests (import + /health)
+        run: |
+          python - <<'PY'
+import importlib
+m = importlib.import_module("app.main")
+print("Imported:", m.__name__)
+PY
+
+      - name: Build Docker image
+        run: docker build -t churn-api:ci .
+
+      - name: Trigger Render deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -n "$HOOK" ]; then
+            curl -s -X POST "$HOOK" && echo "Triggered Render deploy"
+          else
+            echo "No deploy hook set; skipping."
+          fi
