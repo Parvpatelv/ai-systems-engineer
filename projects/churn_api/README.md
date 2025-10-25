@@ -1,5 +1,8 @@
 # Customer Churn Prediction API
 
+![CI/CD](https://github.com/Parvpatelv/ai-systems-engineer/actions/workflows/deploy.yml/badge.svg)
+
+
 ## 🧠 System Overview
 This project demonstrates an end-to-end AI Systems workflow:
 - **Model Versioning:** Each training run saves model + metadata with Git SHA & metrics (e.g., `models/churn_model_v1.1.pkl`, `models/metadata_v1.1.json`).
